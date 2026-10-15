@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Proof Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--gold:#ffde59;--bg:#000;--card:#0f0f0f;--line:rgba(255,222,89,.28);--muted:#bdbdbd}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#fff;font-family:Poppins,system-ui,sans-serif;line-height:1.6;padding:24px 16px}
+.wrap{max-width:720px;margin:0 auto}
+h1{color:var(--gold);font-size:1.5rem;margin:0 0 4px}
+h2{font-size:1.1rem;margin:0 0 6px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+label{display:block;font-weight:600;margin:14px 0 6px;font-size:.9rem}
+input[type=text],input[type=email],textarea{width:100%;background:#000;color:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;font:inherit}
+textarea{min-height:120px}
+input[type=file]{color:var(--muted);font:inherit;font-size:.9rem}
+button{background:var(--gold);color:#000;border:0;border-radius:10px;padding:12px 20px;font:inherit;font-weight:700;cursor:pointer}
+button.ghost{background:transparent;color:var(--gold);border:1px solid var(--line)}
+button.small{padding:8px 14px;font-size:.85rem}
+button:disabled{opacity:.5;cursor:wait}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+.muted{color:var(--muted);font-size:.85rem}
+.item{display:flex;gap:12px;align-items:flex-start;border-top:1px solid var(--line);padding:14px 0}
+.item:first-child{border-top:0}
+.item .grow{flex:1;min-width:0}
+.item img,.item .ph{width:56px;height:56px;border-radius:50%;object-fit:cover;flex:none;border:2px solid var(--gold)}
+.ph{display:flex;align-items:center;justify-content:center;background:#111;color:var(--gold);font-weight:700}
+.msg{margin-top:12px;font-size:.9rem}
+.err{color:#ff8a80}
+.ok{color:#9be7a1}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Proof Manager</h1>
+  <p class="muted">Add client reviews once. They show on your sites automatically, and redeploying a site never removes them.</p>
+
+  <div id="setup" class="card" hidden>
+    <h2>Setup not finished</h2>
+    <p class="muted">Open <strong>config.js</strong> and paste your Supabase URL and anon key (see the README), then redeploy.</p>
+  </div>
+
+  <div id="login" class="card" hidden>
+    <h2>Log in</h2>
+    <p class="muted">Enter your email and I will send you a login link. No password needed.</p>
+    <label for="email">Email</label>
+    <input id="email" type="email" value="cdtfavourosagie@gmail.com" autocomplete="email">
+    <div class="row" style="margin-top:14px"><button id="send">Send me a login link</button></div>
+    <div id="login-msg" class="msg"></div>
+  </div>
+
+  <div id="manager" hidden>
+    <div class="card">
+      <h2>Add a review</h2>
+      <form id="form">
+        <label for="name">Name</label>
+        <input id="name" type="text" required>
+        <label for="title">What they do (optional)</label>
+        <input id="title" type="text" placeholder="e.g. Fabric seller, Ibadan">
+        <label for="quote">Their testimonial</label>
+        <textarea id="quote" required></textarea>
+        <label for="photo">Photo (optional, leave empty if they chose not to show one)</label>
+        <input id="photo" type="file" accept="image/*">
+        <p class="muted">Photos are shrunk automatically so the sites stay fast.</p>
+        <label>Show on</label>
+        <div class="row">
+          <label style="margin:0;font-weight:400"><input type="checkbox" name="show" value="foundry" checked> Community Foundry</label>
+          <label style="margin:0;font-weight:400"><input type="checkbox" name="show" value="build" checked> Build With CDT</label>
+        </div>
+        <div class="row" style="margin-top:18px"><button id="save" type="submit">Save review</button></div>
+        <div id="form-msg" class="msg"></div>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Your reviews</h2>
+        <div class="row">
+          <button id="backup" class="ghost small">Download backup</button>
+          <button id="logout" class="ghost small">Log out</button>
+        </div>
+      </div>
+      <div id="list"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+(function () {
+  var CFG = window.CDT_CONFIG || {};
+  var ALLOWED = 'cdtfavourosagie@gmail.com';
+  function $(id) { return document.getElementById(id); }
+  function msg(id, text, bad) {
+    var n = $(id + '-msg');
+    n.textContent = text;
+    n.className = 'msg ' + (bad ? 'err' : 'ok');
+  }
+
+  if (!CFG.SUPABASE_URL || CFG.SUPABASE_URL.indexOf('YOUR_') === 0) {
+    $('setup').hidden = false;
+    return;
+  }
+  $('login').hidden = false;
+
+  var sb = supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
+
+  $('send').onclick = async function () {
+    var email = $('email').value.trim().toLowerCase();
+    if (email !== ALLOWED) { msg('login', 'That email is not allowed here.', true); return; }
+    var res = await sb.auth.signInWithOtp({
+      email: email,
+      options: { emailRedirectTo: location.origin + location.pathname }
+    });
+    msg('login', res.error ? res.error.message : 'Check your inbox for the login link.', !!res.error);
+  };
+
+  async function check() {
+    var res = await sb.auth.getSession();
+    var s = res.data && res.data.session;
+    if (s && String(s.user.email || '').toLowerCase() === ALLOWED) {
+      $('login').hidden = true;
+      $('manager').hidden = false;
+      load();
+    } else if (s) {
+      await sb.auth.signOut();
+      msg('login', 'This account is not allowed.', true);
+    } else {
+      $('login').hidden = false;
+      $('manager').hidden = true;
+    }
+  }
+  sb.auth.onAuthStateChange(function () { check(); });
+  check();
+
+  $('logout').onclick = function () { sb.auth.signOut(); };
+
+  function toWebp(file, max) {
+    max = max || 600;
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      var u = URL.createObjectURL(file);
+      img.onload = function () {
+        var s = Math.min(1, max / Math.max(img.width, img.height));
+        var c = document.createElement('canvas');
+        c.width = Math.round(img.width * s);
+        c.height = Math.round(img.height * s);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        c.toBlob(function (b) {
+          URL.revokeObjectURL(u);
+          b ? resolve(b) : reject(new Error('Could not convert the photo.'));
+        }, 'image/webp', 0.82);
+      };
+      img.onerror = function () { reject(new Error('That file is not a readable image.')); };
+      img.src = u;
+    });
+  }
+
+  $('form').onsubmit = async function (e) {
+    e.preventDefault();
+    var btn = $('save');
+    btn.disabled = true;
+    msg('form', 'Saving...');
+    try {
+      var name = $('name').value.trim();
+      var title = $('title').value.trim();
+      var quote = $('quote').value.trim();
+      var show = Array.prototype.slice.call(document.querySelectorAll('input[name=show]:checked')).map(function (x) { return x.value; });
+      if (!name || !quote || !show.length) throw new Error('Add a name, the testimonial, and at least one site.');
+      var photo_url = null;
+      var f = $('photo').files[0];
+      if (f) {
+        var blob = await toWebp(f);
+        var path = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())) + '.webp';
+        var up = await sb.storage.from('proof').upload(path, blob, { contentType: 'image/webp', cacheControl: '31536000' });
+        if (up.error) throw up.error;
+        photo_url = sb.storage.from('proof').getPublicUrl(path).data.publicUrl;
+      }
+      var ins = await sb.from('testimonials').insert({ name: name, title: title || null, quote: quote, photo_url: photo_url, show_on: show });
+      if (ins.error) throw ins.error;
+      e.target.reset();
+      msg('form', 'Saved. It is now live on the selected site(s).');
+      load();
+    } catch (err) {
+      msg('form', err.message || String(err), true);
+    }
+    btn.disabled = false;
+  };
+
+  async function load() {
+    var list = $('list');
+    list.textContent = '';
+    var res = await sb.from('testimonials').select('*').order('created_at', { ascending: false });
+    if (res.error) { list.textContent = res.error.message; return; }
+    if (!res.data.length) {
+      var p = document.createElement('p');
+      p.className = 'muted';
+      p.textContent = 'No reviews yet.';
+      list.appendChild(p);
+      return;
+    }
+    res.data.forEach(function (r) {
+      var row = document.createElement('div');
+      row.className = 'item';
+      if (r.photo_url) {
+        var im = document.createElement('img');
+        im.src = r.photo_url; im.alt = r.name; im.loading = 'lazy';
+        row.appendChild(im);
+      } else {
+        var ph = document.createElement('div');
+        ph.className = 'ph';
+        ph.textContent = (r.name || '?').charAt(0).toUpperCase();
+        row.appendChild(ph);
+      }
+      var g = document.createElement('div');
+      g.className = 'grow';
+      var strong = document.createElement('strong');
+      strong.textContent = r.name + (r.title ? ' (' + r.title + ')' : '');
+      var q = document.createElement('div');
+      q.className = 'muted';
+      q.textContent = r.quote;
+      var s = document.createElement('div');
+      s.className = 'muted';
+      s.textContent = 'Shown on: ' + (r.show_on || []).join(', ');
+      g.appendChild(strong); g.appendChild(q); g.appendChild(s);
+      row.appendChild(g);
+      var del = document.createElement('button');
+      del.className = 'ghost small';
+      del.textContent = 'Delete';
+      del.onclick = async function () {
+        if (!confirm('Delete this review?')) return;
+        var d = await sb.from('testimonials').delete().eq('id', r.id);
+        if (d.error) { alert(d.error.message); return; }
+        if (r.photo_url && r.photo_url.indexOf('/proof/') > -1) {
+          await sb.storage.from('proof').remove([r.photo_url.split('/proof/')[1]]);
+        }
+        load();
+      };
+      row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+
+  $('backup').onclick = async function () {
+    var res = await sb.from('testimonials').select('*').order('created_at', { ascending: false });
+    if (res.error) { alert(res.error.message); return; }
+    var blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'cdt-reviews-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+    a.click();
+  };
+})();
+</script>
+</body>
+</html>
