@@ -17,7 +17,7 @@ h1{color:var(--gold);font-size:1.5rem;margin:0 0 4px}
 h2{font-size:1.1rem;margin:0 0 6px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
 label{display:block;font-weight:600;margin:14px 0 6px;font-size:.9rem}
-input[type=text],input[type=email],textarea{width:100%;background:#000;color:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;font:inherit}
+input[type=text],input[type=email],input[type=number],input[type=date],input[type=datetime-local],textarea{width:100%;background:#000;color:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;font:inherit}
 textarea{min-height:120px}
 input[type=file]{color:var(--muted);font:inherit;font-size:.9rem}
 button{background:var(--gold);color:#000;border:0;border-radius:10px;padding:12px 20px;font:inherit;font-weight:700;cursor:pointer}
@@ -58,6 +58,18 @@ button:disabled{opacity:.5;cursor:wait}
 
   <div id="manager" hidden>
     <div class="card">
+      <h2>Prices and dates</h2>
+      <p class="muted">Change any price or date and save. Both sites update on their own, including the totals, the savings, the dates in the text, and the WhatsApp messages on every button. No redeploy needed.</p>
+      <div id="price-fields"></div>
+      <p id="price-summary" class="muted" style="margin-top:14px"></p>
+      <div class="row" style="margin-top:14px">
+        <button id="price-save" type="button">Save prices</button>
+        <button id="price-reset" type="button" class="ghost">Fill in the original values</button>
+      </div>
+      <div id="price-msg" class="msg"></div>
+    </div>
+
+    <div class="card">
       <h2>Add a review</h2>
       <form id="form">
         <label for="name">Name</label>
@@ -93,6 +105,7 @@ button:disabled{opacity:.5;cursor:wait}
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="price-defaults.js"></script>
 <script src="config.js"></script>
 <script>
 (function () {
@@ -130,6 +143,7 @@ button:disabled{opacity:.5;cursor:wait}
       $('login').hidden = true;
       $('manager').hidden = false;
       load();
+      loadPrices();
     } else if (s) {
       await sb.auth.signOut();
       msg('login', 'This account is not allowed.', true);
@@ -248,6 +262,102 @@ button:disabled{opacity:.5;cursor:wait}
       list.appendChild(row);
     });
   }
+
+  // ---------- Prices and dates ----------
+  var DEF = window.CDT_DEFAULTS || { services: [] };
+  var priceIds = [];
+
+  function priceMoney(v) { return '₦' + Number(v || 0).toLocaleString('en-US'); }
+
+  function field(box, id, label, type, val) {
+    var l = document.createElement('label');
+    l.setAttribute('for', id);
+    l.textContent = label;
+    var i = document.createElement('input');
+    i.type = type;
+    i.id = id;
+    i.value = val;
+    if (type === 'number') { i.min = '0'; i.step = '500'; i.inputMode = 'numeric'; }
+    i.addEventListener('input', summarize);
+    box.appendChild(l);
+    box.appendChild(i);
+  }
+
+  function renderPriceForm(v) {
+    var box = $('price-fields');
+    box.textContent = '';
+    field(box, 'pf-pre', 'Pre-order price for all services (₦)', 'number', v.pre);
+    field(box, 'pf-full', 'Full package price after the switch (₦)', 'number', v.full);
+    field(box, 'pf-lock', 'Reserve amount (₦)', 'number', v.lock);
+    field(box, 'pf-switch', 'Price switches at this date and time (Nigeria time)', 'datetime-local', String(v.switch).slice(0, 16));
+    field(box, 'pf-launch', 'Work begins on', 'date', v.launch);
+    var h = document.createElement('h2');
+    h.style.marginTop = '24px';
+    h.textContent = 'Price of each service (₦)';
+    box.appendChild(h);
+    priceIds = [];
+    DEF.services.forEach(function (s) {
+      priceIds.push(s.id);
+      var cur = (v.services && typeof v.services[s.id] === 'number') ? v.services[s.id] : s.price;
+      field(box, 'pf-svc-' + s.id, s.name, 'number', cur);
+    });
+    summarize();
+  }
+
+  function readPriceForm() {
+    var out = {
+      pre: Number($('pf-pre').value), full: Number($('pf-full').value), lock: Number($('pf-lock').value),
+      switch: $('pf-switch').value + ':00+01:00', launch: $('pf-launch').value, services: {}
+    };
+    priceIds.forEach(function (id) { out.services[id] = Number($('pf-svc-' + id).value); });
+    return out;
+  }
+
+  function summarize() {
+    if (!$('pf-pre')) return;
+    var v = readPriceForm(), total = 0;
+    priceIds.forEach(function (id) { total += v.services[id] || 0; });
+    $('price-summary').textContent = 'Total if bought separately: ' + priceMoney(total) +
+      '. Pre-order saves ' + priceMoney(total - v.pre) + '. Full package saves ' + priceMoney(total - v.full) + '.';
+  }
+
+  function defaultsAsValue() {
+    var s = {};
+    DEF.services.forEach(function (x) { s[x.id] = x.price; });
+    return { pre: DEF.pre, full: DEF.full, lock: DEF.lock, switch: DEF.switch, launch: DEF.launch, services: s };
+  }
+
+  async function loadPrices() {
+    var base = defaultsAsValue();
+    var res = await sb.from('site_settings').select('value').eq('key', 'pricing').maybeSingle();
+    var v = (res.data && res.data.value) || {};
+    var merged = {
+      pre: typeof v.pre === 'number' ? v.pre : base.pre,
+      full: typeof v.full === 'number' ? v.full : base.full,
+      lock: typeof v.lock === 'number' ? v.lock : base.lock,
+      switch: v.switch || base.switch,
+      launch: v.launch || base.launch,
+      services: v.services || base.services
+    };
+    renderPriceForm(merged);
+    if (res.error) msg('price', 'Could not load saved prices: ' + res.error.message, true);
+  }
+
+  $('price-reset').onclick = function () { renderPriceForm(defaultsAsValue()); msg('price', 'Original values filled in. Press Save prices to keep them.'); };
+
+  $('price-save').onclick = async function () {
+    var v = readPriceForm();
+    var nums = [v.pre, v.full, v.lock].concat(priceIds.map(function (id) { return v.services[id]; }));
+    if (nums.some(function (x) { return !isFinite(x) || x < 0; })) { msg('price', 'Every price must be a number, zero or more.', true); return; }
+    if (!$('pf-switch').value || !$('pf-launch').value) { msg('price', 'Please set both dates.', true); return; }
+    var btn = $('price-save');
+    btn.disabled = true;
+    msg('price', 'Saving...');
+    var res = await sb.from('site_settings').upsert({ key: 'pricing', value: v, updated_at: new Date().toISOString() });
+    btn.disabled = false;
+    if (res.error) { msg('price', res.error.message, true); return; }
+    msg('price', 'Saved. Both sites now show these values (refresh a page to see it).');
+  };
 
   $('backup').onclick = async function () {
     var res = await sb.from('testimonials').select('*').order('created_at', { ascending: false });
