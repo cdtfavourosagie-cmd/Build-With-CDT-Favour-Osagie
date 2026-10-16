@@ -198,7 +198,7 @@ button:disabled{opacity:.5;cursor:wait}
         if (up.error) throw up.error;
         photo_url = sb.storage.from('proof').getPublicUrl(path).data.publicUrl;
       }
-      var ins = await sb.from('testimonials').insert({ name: name, title: title || null, quote: quote, photo_url: photo_url, show_on: show });
+      var ins = await sb.from('testimonials').insert({ name: name, title: title || null, quote: quote, photo_url: photo_url, show_on: show, position: current.length + 1 });
       if (ins.error) throw ins.error;
       e.target.reset();
       msg('form', 'Saved. It is now live on the selected site(s).');
@@ -209,21 +209,99 @@ button:disabled{opacity:.5;cursor:wait}
     btn.disabled = false;
   };
 
+  var current = [];
+
+  function setBusy(on) {
+    var l = $('list');
+    l.style.opacity = on ? '.5' : '1';
+    l.style.pointerEvents = on ? 'none' : 'auto';
+  }
+
+  // Save the new order: position 1 shows first on the sites.
+  async function saveOrder(rows) {
+    var jobs = [];
+    rows.forEach(function (r, i) {
+      if (r.position !== i + 1) {
+        jobs.push(sb.from('testimonials').update({ position: i + 1 }).eq('id', r.id));
+      }
+    });
+    var results = await Promise.all(jobs);
+    for (var k = 0; k < results.length; k++) {
+      if (results[k].error) throw results[k].error;
+    }
+  }
+
+  async function move(index, to) {
+    if (to < 0 || to >= current.length || to === index) return;
+    var rows = current.slice();
+    var item = rows.splice(index, 1)[0];
+    rows.splice(to, 0, item);
+    setBusy(true);
+    try { await saveOrder(rows); } catch (err) { alert(err.message || String(err)); }
+    setBusy(false);
+    load();
+  }
+
+  function makeBtn(label, title, fn, disabled) {
+    var b = document.createElement('button');
+    b.className = 'ghost small';
+    b.type = 'button';
+    b.textContent = label;
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.disabled = !!disabled;
+    if (disabled) b.style.opacity = '.3';
+    b.onclick = fn;
+    return b;
+  }
+
+  async function removeReview(r) {
+    var d = await sb.from('testimonials').delete().eq('id', r.id);
+    if (d.error) { alert(d.error.message); return; }
+    if (r.photo_url && r.photo_url.indexOf('/proof/') > -1) {
+      await sb.storage.from('proof').remove([r.photo_url.split('/proof/')[1]]);
+    }
+    var rest = current.filter(function (x) { return x.id !== r.id; });
+    try { await saveOrder(rest); } catch (e) { /* order fixes itself on next move */ }
+    load();
+  }
+
   async function load() {
     var list = $('list');
+    var res = await sb.from('testimonials').select('*')
+      .order('position', { ascending: true, nullsFirst: false })
+      .order('created_at', { ascending: false });
     list.textContent = '';
-    var res = await sb.from('testimonials').select('*').order('created_at', { ascending: false });
-    if (res.error) { list.textContent = res.error.message; return; }
-    if (!res.data.length) {
+    if (res.error) {
+      list.textContent = res.error.message + (/position/i.test(res.error.message)
+        ? ' (Run the one-line "position" step in Supabase first, see the guide.)' : '');
+      return;
+    }
+    current = res.data;
+    if (!current.length) {
       var p = document.createElement('p');
       p.className = 'muted';
       p.textContent = 'No reviews yet.';
       list.appendChild(p);
       return;
     }
-    res.data.forEach(function (r) {
+    // First time (or after adding): number any review that has no position yet.
+    if (current.some(function (r) { return r.position == null; })) {
+      try { await saveOrder(current); current.forEach(function (r, i) { r.position = i + 1; }); } catch (e) { /* ignore */ }
+    }
+    var hint = document.createElement('p');
+    hint.className = 'muted';
+    hint.textContent = 'The order here is the order on your sites. Number 1 shows first (far left). Use Top, Up and Down to rearrange.';
+    list.appendChild(hint);
+
+    current.forEach(function (r, i) {
       var row = document.createElement('div');
       row.className = 'item';
+      var num = document.createElement('div');
+      num.className = 'ph';
+      num.style.cssText = 'width:34px;height:34px;border-width:1px;font-size:.85rem';
+      num.textContent = String(i + 1);
+      row.appendChild(num);
       if (r.photo_url) {
         var im = document.createElement('img');
         im.src = r.photo_url; im.alt = r.name; im.loading = 'lazy';
@@ -240,25 +318,44 @@ button:disabled{opacity:.5;cursor:wait}
       strong.textContent = r.name + (r.title ? ' (' + r.title + ')' : '');
       var q = document.createElement('div');
       q.className = 'muted';
-      q.textContent = r.quote;
+      q.textContent = r.quote.length > 160 ? r.quote.slice(0, 160) + '...' : r.quote;
       var s = document.createElement('div');
       s.className = 'muted';
       s.textContent = 'Shown on: ' + (r.show_on || []).join(', ');
       g.appendChild(strong); g.appendChild(q); g.appendChild(s);
+
+      var actions = document.createElement('div');
+      actions.className = 'row';
+      actions.style.cssText = 'gap:8px;margin-top:10px';
+      function showButtons() {
+        actions.textContent = '';
+        actions.appendChild(makeBtn('Top', 'Move to the front', function () { move(i, 0); }, i === 0));
+        actions.appendChild(makeBtn('Up', 'Move one place earlier', function () { move(i, i - 1); }, i === 0));
+        actions.appendChild(makeBtn('Down', 'Move one place later', function () { move(i, i + 1); }, i === current.length - 1));
+        var del = makeBtn('Delete', 'Delete this review', askSure, false);
+        del.style.color = '#ff8a80';
+        actions.appendChild(del);
+      }
+      var timer;
+      function askSure() {
+        actions.textContent = '';
+        var t = document.createElement('span');
+        t.className = 'err';
+        t.style.cssText = 'font-weight:600;font-size:.9rem';
+        t.textContent = 'Delete ' + r.name + "'s review for good?";
+        var yes = document.createElement('button');
+        yes.type = 'button';
+        yes.className = 'small';
+        yes.style.cssText = 'background:#ff8a80;color:#000';
+        yes.textContent = 'Yes, delete';
+        yes.onclick = function () { clearTimeout(timer); yes.disabled = true; removeReview(r); };
+        var no = makeBtn('Cancel', 'Keep this review', function () { clearTimeout(timer); showButtons(); }, false);
+        actions.appendChild(t); actions.appendChild(no); actions.appendChild(yes);
+        timer = setTimeout(showButtons, 8000);
+      }
+      showButtons();
+      g.appendChild(actions);
       row.appendChild(g);
-      var del = document.createElement('button');
-      del.className = 'ghost small';
-      del.textContent = 'Delete';
-      del.onclick = async function () {
-        if (!confirm('Delete this review?')) return;
-        var d = await sb.from('testimonials').delete().eq('id', r.id);
-        if (d.error) { alert(d.error.message); return; }
-        if (r.photo_url && r.photo_url.indexOf('/proof/') > -1) {
-          await sb.storage.from('proof').remove([r.photo_url.split('/proof/')[1]]);
-        }
-        load();
-      };
-      row.appendChild(del);
       list.appendChild(row);
     });
   }
